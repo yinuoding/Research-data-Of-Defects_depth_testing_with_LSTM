@@ -1,0 +1,50 @@
+import com.comsol.model.*
+import com.comsol.model.util.*
+
+ModelUtil.showProgress(false);
+
+model.param.set('t_x', '0.0');
+model.param.set('t_z', '0.0');
+model.param.set('t_y', '0.0');
+model.param.set('t_h', '0.0');
+model.param.set('t_ra', '0.0');
+
+plk_rounded_transposed = plk_rounded';
+numParams = size(plk_rounded_transposed, 2);
+savePath = 'H:\机器学习 红外太赫兹论文\红外部分\红外comsol模拟训练库\训练库\';
+
+for i = 1:numParams
+    params = plk_rounded_transposed(:, i);
+    
+    model.param.set('t_x', num2str(params(1)));
+    model.param.set('t_z', num2str(params(2)));
+    model.param.set('t_y', num2str(params(3)));
+    model.param.set('t_h', num2str(params(4)));
+    model.param.set('t_ra', num2str(params(5)));
+    
+    model.study('std1').run();
+    model.study('std2').run();
+    
+    data = mpheval(model, 'T', 'edim', 3, 'dataset', 'dset2', 'refine', 2);
+    
+    x = data.p(1, :);
+    y = data.p(2, :);
+    z
+    T = data.d1;
+    
+    idx = find(abs(data.p(3, :) - 0.0003) < 1e-6);
+    
+    exportPath = [savePath, sprintf('output_%d.txt', i)];
+    fid = fopen(exportPath, 'w');
+    fprintf(fid, '%%x y T\n');
+    for j = 1:length(idx)
+        fprintf(fid, '%f %f %f\n', x(idx(j)), y(idx(j)), T(idx(j)));
+    end
+    fclose(fid);
+    
+    model.result.clear();
+end
+
+model.close();
+ModelUtil.disconnect();
+comsolserver stop

@@ -1,0 +1,144 @@
+import pandas as pd
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import TimeDistributed, Conv2D, MaxPooling2D, Flatten, LSTM, Dense
+from tensorflow.keras.preprocessing.image import img_to_array, load_img
+from tensorflow.keras.utils import Sequence
+import tensorflow as tf
+from tensorflow.keras import mixed_precision
+from tensorflow.keras.layers import GlobalAveragePooling2D, Conv2D, MaxPooling2D, LSTM, Dense, TimeDistributed
+
+mixed_precision.set_global_policy('mixed_float16')
+
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        print(e)
+
+from tensorflow.keras.optimizers import Adam
+
+optimizer = Adam(lr=0.0001)
+
+import numpy as np
+import os
+from tensorflow.keras.utils import Sequence
+from tensorflow.keras.preprocessing.image import img_to_array, load_img
+
+class FolderDataGenerator(Sequence):
+    def __init__(self, folder_indices, defect_start_frame, base_dir, dim=(248, 198), n_channels=1, shuffle=True, images_per_folder=1100):
+        self.folder_indices = folder_indices
+        self.defect_start_frame = defect_start_frame
+        self.base_dir = base_dir
+        self.dim = dim
+        self.n_channels = n_channels
+        self.shuffle = shuffle
+        self.images_per_folder = images_per_folder
+        if self.shuffle:
+            np.random.shuffle(self.folder_indices)
+
+    def __len__(self):
+        return len(self.folder_indices)
+
+    def __getitem__(self, index):
+        folder_index = self.folder_indices[index]
+        folder_path = os.path.join(self.base_dir, str(folder_index))
+        X = np.empty((self.images_per_folder, *self.dim, self.n_channels), dtype=np.float32)
+        for i in range(1, self.images_per_folder + 1):
+            image_path = os.path.join(folder_path, f"{folder_index}({i}).png")
+            if os.path.exists(image_path):
+                img = img_to_array(load_img(image_path, color_mode='grayscale' if self.n_channels == 1 else 'rgb', target_size=self.dim)) / 255.0
+                X[i-1,] = img
+            else:
+                X[i-1,] = np.zeros(self.dim + (self.n_channels,))
+        y = np.array([self.defect_start_frame[folder_index]])
+        return X, y
+
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.folder_indices)
+
+def create_model(input_shape=(1100, 248, 198, 1)):
+    model = Sequential([
+        TimeDistributed(Conv2D(8, (3, 3), activation='relu'), input_shape=input_shape),
+        TimeDistributed(MaxPooling2D(2, 2)),
+        TimeDistributed(Conv2D(16, (3, 3), activation='relu')),
+        TimeDistributed(MaxPooling2D((2, 2), strides=(2, 2))),
+        TimeDistributed(GlobalAveragePooling2D()),
+        LSTM(20),
+        Dense(1, activation='linear', dtype='float32')
+    ])
+     
+    model.compile(optimizer=optimizer, loss='mean_squared_error')
+
+    return model
+
+base_dir = 'D:\\xlk2'
+model_dir = os.path.join(base_dir, 'model_folder')
+os.makedirs(model_dir, exist_ok=True)
+model_path = os.path.join(model_dir, 'my_model.h5')
+
+labelled_folders = [1] + list(range(5, 301, 5))
+labels = [1, 1, 5, 9, 13, 18, 24, 30, 38, 45, 53, 61, 71, 84, 96, 105, 118, 133, 144, 156, 164, 174, 181, 186, 197, 210, 221, 235, 252, 257, 269, 291, 307, 338, 346, 360, 370, 379, 398, 429, 444, 482, 521, 543, 562, 598, 635, 654, 667, 681, 699, 703, 715, 771, 793, 800, 821, 833, 900, 924, 968]
+
+defect_start_frame = {
+    1: 1, 5: 1, 10: 5, 15: 9, 20: 13, 25: 18, 30: 24, 35: 30, 40: 38, 45: 45,
+    50: 53, 55: 61, 60: 71, 65: 84, 70: 96, 75: 105, 80: 118, 85: 133, 90: 144,
+    95: 156, 100: 164, 105: 174, 110: 181, 115: 186, 120: 197, 125: 210, 130: 221,
+    135: 235, 140: 252, 145: 257, 150: 269, 155: 291, 160: 307, 165: 338, 170: 346,
+    175: 360, 180: 370, 185: 379, 190: 398, 195: 429, 200: 444, 205: 482, 210: 521,
+    215: 543, 220: 562, 225: 598, 230: 635, 235: 654, 240: 667, 245: 681, 250: 699,
+    255: 703, 260: 715, 265: 771, 270: 793, 275: 800, 280: 821, 285: 833, 290: 900,
+    295: 924, 300: 968
+}
+
+folder_to_label = {labelled_folders[i]: labels[i] for i in range(len(labelled_folders))}
+
+training_generator = FolderDataGenerator(folder_indices=labelled_folders, defect_start_frame=defect_start_frame, base_dir=base_dir)
+
+model = create_model()
+
+model.fit(training_generator, epochs=10, batch_size=1)
+
+model.save(model_path)
+
+from tensorflow.keras.models import load_model
+import pandas as pd
+
+def predict_and_save(model, base_dir, total_folders=300, dim=(248, 198), n_channels=1):
+    results = []
+    for folder_index in range(1, total_folders + 1):
+        print(f"Processing folder {folder_index}...")
+        folder_path = os.path.join(base_dir, str(folder_index))
+        X = []
+
+        for image_index in range(1, 1101):
+            image_path = os.path.join(folder_path, f"{folder_index}({image_index}).png")
+            if os.path.exists(image_path):
+                img = load_img(image_path, target_size=dim, color_mode='grayscale' if n_channels == 1 else 'rgb')
+                img_array = img_to_array(img) / 255.0
+                X.append(img_array)
+            else:
+                X.append(np.zeros((*dim, n_channels)))
+            
+            if len(X) >= 1100:
+                break
+
+        X = np.array(X)
+        X = np.expand_dims(X, axis=0)
+
+        prediction = model.predict(X)
+        defect_start_frame = prediction[0][0]
+        
+        results.append((folder_index, defect_start_frame))
+
+    df_results = pd.DataFrame(results, columns=['Folder', 'Predicted Defect Start Frame'])
+    results_file_path = os.path.join(base_dir, 'defect_detection_results_regression.xlsx')
+    df_results.to_excel(results_file_path, index=False)
+
+    print(f"Results saved to {results_file_path}")
+
+model = load_model(model_path)
+
+predict_and_save(model, base_dir)
